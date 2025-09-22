@@ -1,138 +1,112 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const querystring = require('querystring');
+const { URL } = require('url');
 
-// Hardcoded CSV file paths
-const MAIN_CSV_PATH = path.join(__dirname, 'data/metadata.csv'); // main CSV
-const RESEND_CSV_PATH = path.join(__dirname, 'data/resend.csv');  // resend CSV
+// File paths
+const CSV_FILE_PATH = path.join(__dirname, 'data/metadata.csv');
+const RESEND_CSV_PATH = path.join(__dirname, 'data/resend.csv');
 
-const PORT = 3000;
-
-// Escape a value for CSV
-function csvEscape(field) {
-  if (field == null) field = '';
-  const s = String(field);
-  if (s.includes('"') || s.includes(',') || s.includes('\n') || s.includes('\r')) {
-    return '"' + s.replace(/"/g, '""') + '"';
-  }
-  return s;
+// Ensure CSV files exist with headers
+if (!fs.existsSync(CSV_FILE_PATH)) {
+  fs.writeFileSync(CSV_FILE_PATH, 'Filename,Title,Keywords\n', 'utf8');
+}
+if (!fs.existsSync(RESEND_CSV_PATH)) {
+  fs.writeFileSync(RESEND_CSV_PATH, 'Filename\n', 'utf8');
 }
 
-// Hardcoded headers
-const MAIN_CSV_HEADERS = ['Filename', 'Title', 'Keywords'];
-const RESEND_CSV_HEADERS = ['Filename'];
-
 const server = http.createServer((req, res) => {
+  const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
 
-  // Append row to main CSV
-  if (req.method === 'PUT' && req.url === '/append-row') {
+  // ============ PUT /append-row ============
+  if (req.method === 'PUT' && parsedUrl.pathname === '/append-row') {
     let body = '';
-    req.on('data', chunk => { body += chunk.toString(); });
+    req.on('data', chunk => (body += chunk.toString()));
     req.on('end', () => {
-      let data;
-      try { data = JSON.parse(body); }
-      catch { 
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        return res.end(JSON.stringify({ error: 'Invalid JSON body' }));
-      }
-
       try {
-        const newRowValues = MAIN_CSV_HEADERS.map(h => csvEscape(data[h] || ''));
-        const newLine = newRowValues.join(',');
+        const data = JSON.parse(body);
 
-        let csvContent = fs.existsSync(MAIN_CSV_PATH) ? fs.readFileSync(MAIN_CSV_PATH, 'utf8') : '';
-        const toAppend = (csvContent.length > 0 ? (csvContent.endsWith('\n') || csvContent.endsWith('\r\n') ? '' : '\n') : '') + newLine;
-        fs.appendFileSync(MAIN_CSV_PATH, toAppend, 'utf8');
+        // Read headers from metadata.csv
+        const fileContent = fs.readFileSync(CSV_FILE_PATH, 'utf8');
+        const headers = fileContent.split(/\r?\n/)[0].split(',').map(h => h.trim());
 
-        const appendedObject = {};
-        MAIN_CSV_HEADERS.forEach((h, i) => appendedObject[h] = newRowValues[i]);
+        // Build row by matching headers
+        const row = headers.map(h => (data[h] !== undefined ? String(data[h]).trim() : '')).join(',');
+
+        // Append row (always newline first)
+        fs.appendFileSync(CSV_FILE_PATH, row + '\n', 'utf8');
 
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ message: 'Row appended', appended: appendedObject }));
-
+        res.end(JSON.stringify({ message: 'Row appended', appended: data }));
       } catch (err) {
         console.error(err);
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Internal server error', details: err.message }));
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid request body', details: err.message }));
       }
     });
   }
 
-  // Delete all rows except headers in both CSVs
-  else if (req.method === 'DELETE' && req.url === '/deleteallrows') {
+  // ============ DELETE /deleteallrows (metadata.csv only) ============
+  else if (req.method === 'DELETE' && parsedUrl.pathname === '/deleteallrows') {
     try {
-      [MAIN_CSV_PATH, RESEND_CSV_PATH].forEach(filePath => {
-        if (!fs.existsSync(filePath)) return;
-        const csvContent = fs.readFileSync(filePath, 'utf8');
-        const lines = csvContent.split(/\r?\n/);
-        if (lines.length > 0) {
-          fs.writeFileSync(filePath, lines[0] + '\n', 'utf8');
-        }
-      });
-
+      const headers = fs.readFileSync(CSV_FILE_PATH, 'utf8').split(/\r?\n/)[0];
+      fs.writeFileSync(CSV_FILE_PATH, headers + '\n');
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ message: 'All rows deleted in both CSVs, headers preserved' }));
-
+      res.end(JSON.stringify({ message: 'All rows deleted in metadata.csv, header preserved' }));
     } catch (err) {
-      console.error(err);
       res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Internal server error', details: err.message }));
+      res.end(JSON.stringify({ error: 'Failed to clear metadata.csv', details: err.message }));
     }
   }
 
-  // Download main CSV
-  else if (req.method === 'GET' && req.url === '/getFile') {
-    if (!fs.existsSync(MAIN_CSV_PATH)) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'CSV file not found' }));
-      return;
+  // ============ DELETE /deleteunprocessedfiles (resend.csv only) ============
+  else if (req.method === 'DELETE' && parsedUrl.pathname === '/deleteunprocessedfiles') {
+    try {
+      const headers = fs.readFileSync(RESEND_CSV_PATH, 'utf8').split(/\r?\n/)[0];
+      fs.writeFileSync(RESEND_CSV_PATH, headers + '\n');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ message: 'All rows deleted in resend.csv, header preserved' }));
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Failed to clear resend.csv', details: err.message }));
     }
+  }
 
+  // ============ GET /getFile ============
+  else if (req.method === 'GET' && parsedUrl.pathname === '/getFile') {
     res.writeHead(200, {
       'Content-Type': 'text/csv',
       'Content-Disposition': 'attachment; filename="metadata.csv"'
     });
-    fs.createReadStream(MAIN_CSV_PATH).pipe(res);
+    fs.createReadStream(CSV_FILE_PATH).pipe(res);
   }
 
-  // Append to resend.csv (PUT request, key/value)
-  else if (req.method === 'PUT' && req.url === '/unprocessed') {
+  // ============ PUT /unprocessed ============
+  else if (req.method === 'PUT' && parsedUrl.pathname === '/unprocessed') {
     let body = '';
-    req.on('data', chunk => { body += chunk.toString(); });
+    req.on('data', chunk => (body += chunk.toString()));
     req.on('end', () => {
-      const data = querystring.parse(body);
-      const filenameValue = data.Filename || data.filename;
-
-      if (!filenameValue) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Filename is required in the request body' }));
-        return;
-      }
-
       try {
-        if (!fs.existsSync(RESEND_CSV_PATH)) {
-          fs.writeFileSync(RESEND_CSV_HEADERS.join(',') + '\n', 'utf8');
+        const params = new URLSearchParams(body);
+        const filename = params.get('Filename');
+
+        if (!filename) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'Filename is required' }));
         }
 
-        const csvContent = fs.readFileSync(RESEND_CSV_PATH, 'utf8');
-        const newLine = csvEscape(filenameValue);
-        const toAppend = (csvContent.length > 0 ? (csvContent.endsWith('\n') || csvContent.endsWith('\r\n') ? '' : '\n') : '') + newLine;
-        fs.appendFileSync(RESEND_CSV_PATH, toAppend, 'utf8');
-
+        fs.appendFileSync(RESEND_CSV_PATH, filename.trim() + '\n');
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ message: 'Filename appended to resend.csv', Filename: filenameValue }));
-
+        res.end(JSON.stringify({ message: 'Filename appended to resend.csv', Filename: filename.trim() }));
       } catch (err) {
-        console.error(err);
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Internal server error', details: err.message }));
+        res.end(JSON.stringify({ error: 'Failed to append to resend.csv', details: err.message }));
       }
     });
   }
 
-  // Get all unprocessed filenames
-  else if (req.method === 'GET' && req.url === '/getUnprocessedFileNames') {
+  // ============ GET /getUnprocessedFileNames ============
+  else if (req.method === 'GET' && parsedUrl.pathname === '/getUnprocessedFileNames') {
     try {
       if (!fs.existsSync(RESEND_CSV_PATH)) {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -141,30 +115,28 @@ const server = http.createServer((req, res) => {
 
       const csvContent = fs.readFileSync(RESEND_CSV_PATH, 'utf8');
       const lines = csvContent.split(/\r?\n/).map(l => l.trim()).filter(l => l !== '');
-      
-      if (lines.length <= 1) { // only header or empty
+
+      if (lines.length <= 1) {
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         return res.end('no files here');
       }
 
-      const fileNames = lines.slice(1); // skip header
+      const fileNames = lines.slice(1);
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify([{ FileNames: fileNames }]));
-
+      res.end(JSON.stringify([{ Filenames: fileNames }]));
     } catch (err) {
-      console.error(err);
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Internal server error', details: err.message }));
     }
   }
 
+  // ============ 404 ============
   else {
     res.writeHead(404, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Not found. Use PUT /append-row, DELETE /deleteallrows, GET /getFile, PUT /unprocessed, GET /getUnprocessedFileNames' }));
+    res.end(JSON.stringify({ error: 'Route not found' }));
   }
-
 });
 
-server.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}`);
+server.listen(3000, () => {
+  console.log('Server running at http://localhost:3000');
 });
