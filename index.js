@@ -19,32 +19,45 @@ const server = http.createServer((req, res) => {
   const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
 
   // ============ PUT /append-row ============
-  if (req.method === 'PUT' && parsedUrl.pathname === '/append-row') {
-    let body = '';
-    req.on('data', chunk => (body += chunk.toString()));
-    req.on('end', () => {
-      try {
-        const data = JSON.parse(body);
+if (req.method === 'PUT' && parsedUrl.pathname === '/append-row') {
+  let body = '';
+  req.on('data', chunk => (body += chunk.toString()));
+  req.on('end', () => {
+    try {
+      const data = JSON.parse(body);
 
-        // Read headers from metadata.csv
-        const fileContent = fs.readFileSync(CSV_FILE_PATH, 'utf8');
-        const headers = fileContent.split(/\r?\n/)[0].split(',').map(h => h.trim());
+      // Read headers from metadata.csv
+      const fileContent = fs.readFileSync(CSV_FILE_PATH, 'utf8');
+      const headers = fileContent
+        .split(/\r?\n/)[0]    // first line (header row)
+        .split(',')           // split into individual header names
+        .map(h => h.trim());  // remove extra spaces
 
-        // Build row by matching headers
-        const row = headers.map(h => (data[h] !== undefined ? String(data[h]).trim() : '')).join(',');
+      // Build row by matching headers
+      const row = headers.map(h => {
+        if (data[h] === undefined) return '';
 
-        // Append row (always newline first)
-        fs.appendFileSync(CSV_FILE_PATH, row + '\n', 'utf8');
+        let value = `"${String(data[h]).trim()}"`;
 
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ message: 'Row appended', appended: data }));
-      } catch (err) {
-        console.error(err);
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Invalid request body', details: err.message }));
-      }
-    });
-  }
+
+        return value;
+      }).join(',');
+
+      // Append row (always newline first)
+      fs.appendFileSync(CSV_FILE_PATH, row + '\n', 'utf8');
+
+      // Success response
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ message: 'Row appended', appended: data }));
+
+    } catch (err) {
+      console.error(err);
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid request body', details: err.message }));
+    }
+  });
+}
+
 
   // ============ DELETE /deleteallrows (metadata.csv only) ============
   else if (req.method === 'DELETE' && parsedUrl.pathname === '/deleteallrows') {
@@ -137,6 +150,6 @@ const server = http.createServer((req, res) => {
   }
 });
 
-server.listen(3000, () => {
+server.listen(3001, () => {
   console.log('Server running at http://localhost:3000');
 });
